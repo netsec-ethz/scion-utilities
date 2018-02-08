@@ -321,11 +321,11 @@ def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
     copy_file(path_policy_file, os.path.join(instance_path, PATH_POLICY_FILE))
 
 
-def generate_sciond_config(isd_as, as_obj, topo_dicts):
+def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
     executable_name = "bin/sciond"
     instance_name = "sd%s" % str(isd_as)
     service_type = "endhost"
-    instance_path = get_elem_dir(GEN_PATH, isd_as, service_type)
+    instance_path = get_elem_dir(gen_path, isd_as, service_type)
     processes = []
     for svc_type in ["BorderRouters", "BeaconService", "CertificateService",
                      "HiddenPathService", "PathService"]:
@@ -338,11 +338,11 @@ def generate_sciond_config(isd_as, as_obj, topo_dicts):
     config['group:' + "as%s" % str(isd_as)] = {'programs': ",".join(processes)}
     write_certs_trc_keys(isd_as, as_obj, instance_path)
     write_as_conf_and_path_policy(isd_as, as_obj, instance_path)
-    write_supervisord_config(config, os.path.join(GEN_PATH, isd_as.ISD(), isd_as.AS()))
+    write_supervisord_config(config, os.path.join(gen_path, isd_as.ISD(), isd_as.AS()))
     write_topology_file(topo_dicts, None, instance_path)
 
 
-def generate_prom_config(isd_as, topo_dicts):
+def generate_prom_config(isd_as, topo_dicts, gen_path=GEN_PATH):
     """
     """
     config_dict = defaultdict(list)
@@ -354,11 +354,11 @@ def generate_prom_config(isd_as, topo_dicts):
             continue
         for elem_id, elem in topo_dicts[svc_type].items():
             config_dict[svc_type].append(_prom_addr_infra(elem))
-    _write_prom_files(isd_as, config_dict)
+    _write_prom_files(isd_as, config_dict, gen_path)
 
 
-def _write_prom_files(isd_as, config_dict):
-    base = os.path.join(GEN_PATH, isd_as.ISD(), isd_as.AS())
+def _write_prom_files(isd_as, config_dict, gen_path=GEN_PATH):
+    base = os.path.join(gen_path, isd_as.ISD(), isd_as.AS())
     as_local_targets_path = {}
     targets_paths = defaultdict(list)
     for ele_type, target_list in config_dict.items():
@@ -368,7 +368,7 @@ def _write_prom_files(isd_as, config_dict):
         targets_paths[JOB_NAMES[ele_type]].append(targets_path)
         as_local_targets_path[JOB_NAMES[ele_type]] = [targets_path]
     _write_prom_conf_file(os.path.join(base, PROM_FILE), as_local_targets_path)
-    _write_prom_conf_file(os.path.join(GEN_PATH, PROM_FILE), targets_paths)
+    _write_prom_conf_file(os.path.join(gen_path, PROM_FILE), targets_paths)
 
 
 def _write_prom_conf_file(config_path, job_dict):
