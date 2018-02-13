@@ -147,7 +147,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     else:  # other infrastructure elements
         prom_addr = "%s:%s" % (instance_dict['Public'][0]['Addr'],
                                instance_dict['Public'][0]['L4Port'] + PROM_PORT_OFFSET)
-        cmd = ('bash -c \'exec bin/%s "%s" "%s" --prom "%s" &>logs/%s.OUT\'') % (
+        cmd = ('bash -c \'exec python/bin/%s "%s" "%s" --prom "%s" &>logs/%s.OUT\'') % (
             executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
             prom_addr, instance_name)
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
@@ -322,7 +322,7 @@ def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
 
 
 def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
-    executable_name = "bin/sciond"
+    executable_name = "python/bin/sciond"
     instance_name = "sd%s" % str(isd_as)
     service_type = "endhost"
     instance_path = get_elem_dir(gen_path, isd_as, service_type)
