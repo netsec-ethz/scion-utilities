@@ -58,7 +58,6 @@ TYPES_TO_EXECUTABLES = {
     'beacon_server': 'beacon_server',
     'path_server': 'path_server',
     'certificate_server': 'cert_server',
-    'sibra_server': 'sibra_server'
 }
 
 TYPES_TO_KEYS = {
@@ -66,7 +65,6 @@ TYPES_TO_KEYS = {
     'certificate_server': 'CertificateService',
     'router': 'BorderRouters',
     'path_server': 'PathService',
-    'sibra_server': 'SibraService'
 }
 
 PROM_DIR = "prometheus"
@@ -327,8 +325,8 @@ def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
     service_type = "endhost"
     instance_path = get_elem_dir(gen_path, isd_as, service_type)
     processes = []
-    for svc_type in ["BorderRouters", "BeaconService", "CertificateService",
-                     "HiddenPathService", "PathService"]:
+    for svc_type in ["BorderRouters", "BeaconService",
+                     "CertificateService", "PathService"]:
         if svc_type not in topo_dicts:
             continue
         for elem_id, elem in topo_dicts[svc_type].items():
@@ -348,8 +346,7 @@ def generate_prom_config(isd_as, topo_dicts, gen_path=GEN_PATH):
     config_dict = defaultdict(list)
     for br_id, br_ele in topo_dicts['BorderRouters'].items():
         config_dict['BorderRouters'].append(_prom_addr_br(br_ele))
-    for svc_type in ["BeaconService", "CertificateService",
-                     "HiddenPathService", "PathService"]:
+    for svc_type in ["BeaconService", "CertificateService", "PathService"]:
         if svc_type not in topo_dicts:
             continue
         for elem_id, elem in topo_dicts[svc_type].items():
