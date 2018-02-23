@@ -57,7 +57,7 @@ TYPES_TO_EXECUTABLES = {
     'router': 'border',
     'beacon_server': 'beacon_server',
     'path_server': 'path_server',
-    'certificate_server': 'cert_server',
+    'certificate_server': 'cert_srv',
 }
 
 TYPES_TO_KEYS = {
@@ -126,26 +126,38 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     :rtype: ConfigParser
     """
     config = configparser.ConfigParser()
-    env_tmpl = 'PYTHONPATH=python:.,ZLOG_CFG="%s/%s.zlog.conf"'
+    env_tmpl = 'PYTHONPATH=python:.,TZ=UTC,ZLOG_CFG="%s/%s.zlog.conf"'
     if not instance_dict:
-        cmd = ('bash -c \'exec %s "--api-addr" "%s" "%s" "%s" &>logs/%s.OUT\'') % (
+        cmd = ('bash -c \'exec "python/bin/%s" "--api-addr" "%s" "%s" "%s" &>logs/%s.OUT\'') % (
             executable_name, "/run/shm/sciond/%s.sock" % instance_name, instance_name,
             get_elem_dir(GEN_PATH, isd_as, "endhost"), instance_name)
-        env = 'PYTHONPATH=python:.'
+        env = 'PYTHONPATH=python/:.,TZ=UTC'
     elif service_type == 'router':  # go router
         env_tmpl += ',GODEBUG="cgocheck=0"'
-        prom_addr = "%s:%s" % (instance_dict['InternalAddrs'][0]['Public'][0]['Addr'],
-                               instance_dict['InternalAddrs'][0]['Public'][0]['L4Port'] +
+        addr_type = 'Bind' if 'Bind' in instance_dict['InternalAddrs'][0].keys() else 'Public'
+        prom_addr = "%s:%s" % (instance_dict['InternalAddrs'][0][addr_type][0]['Addr'],
+                               instance_dict['InternalAddrs'][0][addr_type][0]['L4Port'] +
                                PROM_PORT_OFFSET)
-        cmd = ('bash -c \'exec bin/%s -id "%s" -confd "%s" -prom "%s" &>logs/%s.OUT\'') % (
+        cmd = ('bash -c \'exec "bin/%s" -id "%s" -confd "%s" -prom "%s" &>logs/%s.OUT\'') % (
+            executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
+            prom_addr, instance_name)
+        env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
+                          instance_name)
+    elif service_type == 'certificate_server': # go certificate server
+        env_tmpl += ',SCIOND_PATH="/run/shm/sciond/sd%s.sock"' % isd_as
+        addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
+        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'],
+                               instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
+        cmd = ('bash -c \'exec "bin/%s" -id "%s" -confd "%s" -prom "%s" &>logs/%s.OUT\'') % (
             executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
             prom_addr, instance_name)
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
                           instance_name)
     else:  # other infrastructure elements
-        prom_addr = "%s:%s" % (instance_dict['Public'][0]['Addr'],
-                               instance_dict['Public'][0]['L4Port'] + PROM_PORT_OFFSET)
-        cmd = ('bash -c \'exec python/bin/%s "%s" "%s" --prom "%s" &>logs/%s.OUT\'') % (
+        addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
+        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'],
+                               instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
+        cmd = ('bash -c \'exec "python/bin/%s" "%s" "%s" --prom "%s" &>logs/%s.OUT\'') % (
             executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
             prom_addr, instance_name)
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
@@ -303,6 +315,7 @@ def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
     """
     Writes AS configuration (i.e. as.yml) and path policy files.
     :param ISD_AS isd_as: ISD-AS for which the config will be written.
+    :param obj as_obj: An object that stores crypto information for AS
     :param str instance_path: Location (in the file system) to write
     the configuration into.
     """
@@ -320,7 +333,14 @@ def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
 
 
 def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
-    executable_name = "python/bin/sciond"
+    """
+    Writes the endhost folder into the given location.
+    :param ISD_AS isd_as: ISD the AS belongs to.
+    :param obj as_obj: An object that stores crypto information for AS
+    :param dict topo_dicts: the topology as a dict of dicts.
+    :param str gen_path: the target location for a gen folder.
+    """
+    executable_name = "sciond"
     instance_name = "sd%s" % str(isd_as)
     service_type = "endhost"
     instance_path = get_elem_dir(gen_path, isd_as, service_type)
