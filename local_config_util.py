@@ -30,11 +30,22 @@ from string import Template
 
 # SCION
 from lib.crypto.asymcrypto import (
+    get_core_sig_key_file_path,
+    get_core_sig_key_raw_file_path,
     get_enc_key_file_path,
     get_sig_key_file_path,
+    get_sig_key_raw_file_path,
 )
 from lib.crypto.certificate_chain import get_cert_chain_file_path
 from lib.crypto.trc import get_trc_file_path
+from lib.crypto.util import (
+    get_ca_cert_file_path,
+    get_ca_private_key_file_path,
+    get_offline_key_file_path,
+    get_offline_key_raw_file_path,
+    get_online_key_file_path,
+    get_online_key_raw_file_path,
+)
 from lib.defines import (
     AS_CONF_FILE,
     GEN_PATH,
@@ -91,12 +102,11 @@ class ASCredential(object):
     """
     A class to keep the credentials of the SCION ASes.
     """
-    def __init__(self, sig_priv_key, enc_priv_key, certificate, trc, master_as_key):
-        self.sig_priv_key = sig_priv_key
-        self.enc_priv_key = enc_priv_key
+    def __init__(self, certificate, trc, keys, core_keys=None):
         self.certificate = certificate
         self.trc = trc
-        self.master_as_key = master_as_key
+        self.keys = keys
+        self.core_keys = core_keys
 
 
 def write_dispatcher_config(local_gen_path):
@@ -294,21 +304,36 @@ def write_certs_trc_keys(isd_as, as_obj, instance_path):
     Writes the certificate and the keys for the given service
     instance of the given AS.
     :param ISD_AS isd_as: ISD the AS belongs to.
+    :param obj as_obj: An object that stores crypto information for AS
     :param str instance_path: Location (in the file system) to write
     the configuration into.
     """
     # write keys
-    sig_path = get_sig_key_file_path(instance_path)
-    enc_path = get_enc_key_file_path(instance_path)
-    write_file(sig_path, as_obj.sig_priv_key)
-    write_file(enc_path, as_obj.enc_priv_key)
-    # write cert
-    cert_chain_path = get_cert_chain_file_path(
-        instance_path, isd_as, INITIAL_CERT_VERSION)
-    write_file(cert_chain_path, as_obj.certificate)
-    # write trc
-    trc_path = get_trc_file_path(instance_path, isd_as[0], INITIAL_TRC_VERSION)
-    write_file(trc_path, as_obj.trc)
+    as_key_path = {
+        'cert': get_cert_chain_file_path(instance_path, isd_as, INITIAL_CERT_VERSION),
+        'trc': get_trc_file_path(instance_path, isd_as[0], INITIAL_TRC_VERSION),
+        'enc_key': get_enc_key_file_path(instance_path),
+        'sig_key': get_sig_key_file_path(instance_path),
+        'sig_key_raw': get_sig_key_raw_file_path(instance_path),
+    }
+    core_key_path = {
+        'core_sig_key': get_core_sig_key_file_path(instance_path),
+        'core_sig_key_raw': get_core_sig_key_raw_file_path(instance_path),
+        'online_key': get_online_key_file_path(instance_path),
+        'online_key_raw': get_online_key_raw_file_path(instance_path),
+        'offline_key': get_offline_key_file_path(instance_path),
+        'offline_key_raw': get_offline_key_raw_file_path(instance_path),
+    }
+    for key, path in as_key_path.items():
+        if key == 'cert': # write certificates
+            write_file(path, as_obj.certificate)
+        elif key == 'trc': # write trc
+            write_file(path, as_obj.trc)
+        else: # write keys
+            write_file(path, as_obj.keys[key])
+    if as_obj.core_keys:
+        for key, path in core_key_path.items():
+            write_file(path, as_obj.core_keys[key])
 
 
 def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
@@ -320,7 +345,7 @@ def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
     the configuration into.
     """
     conf = {
-        'MasterASKey': as_obj.master_as_key,
+        'MasterASKey': as_obj.keys['master_as_key'],
         'RegisterTime': 5,
         'PropagateTime': 5,
         'CertChainVersion': 0,
