@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# Copyright 2014 ETH Zurich
+# Copyright 2018 ETH Zurich
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@ import os
 import sys
 import base64
 import time
+import copy
 
-# from lib.packet.scion_addr import ISD_AS
 from topology.generator import (
     TopoID, 
     DEFAULT_KEYGEN_ALG, 
@@ -37,9 +37,9 @@ from lib.crypto.trc import (
 from lib.crypto.util import get_online_key_file_path
 from nacl.signing import SigningKey, VerifyKey
 
-# DEFAULT_KEYGEN_ALG = 'ed25519'
-ONLINE_PRIVATE_KEY_STRING = 'PrivateOnlineKey'
 
+ONLINE_PRIVATE_KEY_STRING = 'PrivateOnlineKey'
+DEFAULT_TRC_VALIDITY = 365 * 24 * 60 * 60
 
 def find_trc(trc_file):
     try:
@@ -62,24 +62,24 @@ def read_key_from_file(key_file):
 
 def get_signing_keys_from_paths(service_paths):
     """
-    service_paths is a dictionary like:
-    service_paths[ISD-AS] = './gen/ISD1/AS11/cs1-11-1'
+    :param dict service_paths: is a dictionary like: service_paths[1-11] = './gen/ISD1/AS11/cs1-11-1'
     """
     key_map = {}
     for name, path in service_paths.items():
-        key_map[name] = {}
-        key_map[name][ONLINE_KEY_ALG_STRING] = DEFAULT_KEYGEN_ALG
+        pathDict = {}
+        pathDict[ONLINE_KEY_ALG_STRING] = DEFAULT_KEYGEN_ALG
         priv = read_key_from_file(os.path.join(path, 'keys', 'online-root.seed'))
         s = SigningKey(priv)
         # this private key will not appear in the TRC, but we need it to sign it:
-        key_map[name][ONLINE_PRIVATE_KEY_STRING] = priv
+        pathDict[ONLINE_PRIVATE_KEY_STRING] = priv
         # we derive the public key from the private one
-        key_map[name][ONLINE_KEY_STRING] = s.verify_key.encode()
+        pathDict[ONLINE_KEY_STRING] = s.verify_key.encode()
         # same for offline:
-        key_map[name][OFFLINE_KEY_ALG_STRING] = DEFAULT_KEYGEN_ALG
+        pathDict[OFFLINE_KEY_ALG_STRING] = DEFAULT_KEYGEN_ALG
         priv = read_key_from_file(os.path.join(path, 'keys', 'offline-root.seed'))
         s = SigningKey(priv)
-        key_map[name][OFFLINE_KEY_STRING] = s.verify_key.encode()
+        pathDict[OFFLINE_KEY_STRING] = s.verify_key.encode()
+        key_map[name] = pathDict
     return key_map
 
 def get_signing_keys_fromISD_directory(core_ases, location_of_ISD):
@@ -92,22 +92,21 @@ def get_signing_keys_fromISD_directory(core_ases, location_of_ISD):
 
 def reissue_trc(trc, key_map):
     """
-    The key_map[ISD-AS] contains 5 keys:
+    Generates a new TRC based on the previous one, and the contents of the key_map
+    :return the new generated TRC
+    :param dict key_map: with ISD-AS as key, and values are dictionaries as well.
+    Each one contains 5 keys:
         ONLINE_PRIVATE_KEY_STRING   : the online private key of ISD-AS; used to sign the TRC, the key won't appear in the TRC
         ONLINE_KEY_ALG_STRING       : always ed25519
         ONLINE_KEY_STRING           : the online public key of ISD-AS, included in the TRC
         OFFLINE_KEY_ALG_STRING      : same as online
         OFFLINE_KEY_STRING          : same as online
     """
+    trc = copy.deepcopy(trc)
     trc.signatures = {}
-    trc.core_ases = {}
+
     # list core ASes:
-    for name, keys in key_map.items():
-        trc.core_ases[name] = {}
-        trc.core_ases[name][ONLINE_KEY_ALG_STRING] = keys[ONLINE_KEY_ALG_STRING]
-        trc.core_ases[name][ONLINE_KEY_STRING] = keys[ONLINE_KEY_STRING]
-        trc.core_ases[name][OFFLINE_KEY_ALG_STRING] = keys[OFFLINE_KEY_ALG_STRING]
-        trc.core_ases[name][OFFLINE_KEY_STRING] = keys[OFFLINE_KEY_STRING]
+    trc.core_ases = {name: {key:keys[key] for key in [ONLINE_KEY_ALG_STRING, ONLINE_KEY_STRING, OFFLINE_KEY_ALG_STRING, OFFLINE_KEY_STRING]} for name, keys in key_map.items()}
     # update version:
     trc.version += 1
     # quorum:
@@ -115,7 +114,8 @@ def reissue_trc(trc, key_map):
     # expiration time:
     now = int(time.time())
     trc.create_time = now
-    trc.exp_time = now + TRC.VALIDITY_PERIOD
+    trc.exp_time = now + DEFAULT_TRC_VALIDITY
+
     # sign with core ASes keys:
     for name, keys in key_map.items():
         trc.sign(name, keys[ONLINE_PRIVATE_KEY_STRING])
@@ -127,10 +127,9 @@ def main():
     parser.add_argument('-f', '--trc-file', required=True, help='Location of the TRC file in the old gen folder')
     parser.add_argument('-c', '--core-ases', nargs='+', help='List of names of the Core ASes that will appear in the TRC')
     parser.add_argument('-a', '--append', help='AS folder of the new to be appended AS. E.g. ./gen/ISD1/AS1010')
-    # parser.add_argument('-n', '--dry-run', action='store_true')
     args = parser.parse_args()
     if (args.append is None and args.core_ases is None) or (args.append is not None and args.core_ases is not None):
-        print("Need to specify --core-ases OR --append")
+        print("Need to specify ONE OF --core-ases OR --append")
         sys.exit(1)
     
     trc = find_trc(args.trc_file)
