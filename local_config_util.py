@@ -98,6 +98,16 @@ JOB_NAMES = {
 PROM_PORT_OFFSET = 1000
 
 
+def isdas_str(isd_as):
+    return isd_as.file_fmt() if 'file_fmt' in dir(isd_as) else str(isd_as)
+
+def isd_str(isd_as):
+    return isd_as.isd_str() if 'isd_str' in dir(isd_as) else isd_as[0]
+
+def as_str(isd_as):
+    return isd_as.as_file_fmt() if 'as_file_fmt' in dir(isd_as) else isd_as[1]
+
+
 class ASCredential(object):
     """
     A class to keep the credentials of the SCION ASes.
@@ -135,6 +145,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     :returns: supervisord configuration as a ConfigParser object
     :rtype: ConfigParser
     """
+    ISDAS = isdas_str(isd_as)
     config = configparser.ConfigParser()
     env_tmpl = 'PYTHONPATH=python:.,TZ=UTC,ZLOG_CFG="%s/%s.zlog.conf"'
     if not instance_dict:
@@ -154,7 +165,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
                           instance_name)
     elif service_type == 'certificate_server': # go certificate server
-        env_tmpl += ',SCIOND_PATH="/run/shm/sciond/sd%s.sock"' % isd_as
+        env_tmpl += ',SCIOND_PATH="/run/shm/sciond/sd%s.sock"' % ISDAS
         addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
         prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'],
                                instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
@@ -193,8 +204,10 @@ def generate_zk_config(tp, isd_as, local_gen_path, simple_conf_mode):
     :param ISD_AS isd_as: ISD-AS for which the ZK config will be written.
     :param str local_gen_path: The gen path of scion-web.
     """
+    ISD = isd_str(isd_as)
+    AS = as_str(isd_as)
     for zk_id, zk in tp['ZookeeperService'].items():
-        instance_name = 'zk%s-%s-%s' % (isd_as[0], isd_as[1], zk_id)
+        instance_name = 'zk%s-%s-%s' % (ISD, AS, zk_id)
         write_zk_conf(local_gen_path, isd_as, instance_name, zk, simple_conf_mode)
 
 
@@ -235,7 +248,9 @@ def get_elem_dir(path, isd_as, elem_id):
     :returns: The directory of the instance.
     :rtype: string
     """
-    return "%s/ISD%s/AS%s/%s" % (path, isd_as[0], isd_as[1], elem_id)
+    ISD = isd_str(isd_as)
+    AS = as_str(isd_as)
+    return "%s/ISD%s/AS%s/%s" % (path, ISD, AS, elem_id)
 
 
 def prep_dispatcher_supervisord_conf():
@@ -366,7 +381,10 @@ def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
     :param str gen_path: the target location for a gen folder.
     """
     executable_name = "sciond"
-    instance_name = "sd%s" % str(isd_as)
+    ISD = isd_str(isd_as)
+    AS = as_str(isd_as)
+    ISDAS = isdas_str(isd_as)
+    instance_name = "sd%s" % ISDAS
     service_type = "endhost"
     instance_path = get_elem_dir(gen_path, isd_as, service_type)
     processes = []
@@ -378,10 +396,10 @@ def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
             processes.append(elem_id)
     processes.append(instance_name)
     config = prep_supervisord_conf(None, executable_name, service_type, instance_name, isd_as)
-    config['group:' + "as%s" % str(isd_as)] = {'programs': ",".join(processes)}
+    config['group:' + "as%s" % ISDAS] = {'programs': ",".join(processes)}
     write_certs_trc_keys(isd_as, as_obj, instance_path)
     write_as_conf_and_path_policy(isd_as, as_obj, instance_path)
-    write_supervisord_config(config, os.path.join(gen_path, isd_as.ISD(), isd_as.AS()))
+    write_supervisord_config(config, os.path.join(gen_path, "ISD%s" % ISD, "AS%s" % AS))
     write_topology_file(topo_dicts, None, instance_path)
 
 
@@ -400,7 +418,9 @@ def generate_prom_config(isd_as, topo_dicts, gen_path=GEN_PATH):
 
 
 def _write_prom_files(isd_as, config_dict, gen_path=GEN_PATH):
-    base = os.path.join(gen_path, isd_as.ISD(), isd_as.AS())
+    ISD = isd_str(isd_as)
+    AS = as_str(isd_as)
+    base = os.path.join(gen_path, ISD, AS)
     as_local_targets_path = {}
     targets_paths = defaultdict(list)
     for ele_type, target_list in config_dict.items():
