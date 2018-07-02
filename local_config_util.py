@@ -150,7 +150,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     env_tmpl = 'PYTHONPATH=python:.,TZ=UTC,ZLOG_CFG="%s/%s.zlog.conf"'
     if not instance_dict:
         cmd = ('bash -c \'exec "python/bin/%s" "--api-addr" "%s" "%s" "%s" &>logs/%s.OUT\'') % (
-            executable_name, "/run/shm/sciond/%s.sock" % instance_name, instance_name,
+            executable_name, "/run/shm/sciond/default.sock", instance_name,
             get_elem_dir(GEN_PATH, isd_as, "endhost"), instance_name)
         env = 'PYTHONPATH=python/:.,TZ=UTC'
     elif service_type == 'router':  # go router
