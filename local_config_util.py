@@ -165,7 +165,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
                           instance_name)
     elif service_type == 'certificate_server': # go certificate server
-        env_tmpl += ',SCIOND_PATH="/run/shm/sciond/sd%s.sock"' % ISDAS
+        env_tmpl += ',SCIOND_PATH="/run/shm/sciond/default.sock"'
         addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
         prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'],
                                instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
