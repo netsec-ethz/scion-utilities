@@ -426,7 +426,7 @@ def generate_prom_config(isd_as, topo_dicts, gen_path=GEN_PATH):
 def _write_prom_files(isd_as, config_dict, gen_path=GEN_PATH):
     ISD = isd_str(isd_as)
     AS = as_str(isd_as)
-    base = os.path.join(gen_path, ISD, AS)
+    base = os.path.join(gen_path, 'ISD%s' % ISD, 'AS%s' % AS)
     as_local_targets_path = {}
     targets_paths = defaultdict(list)
     for ele_type, target_list in config_dict.items():
