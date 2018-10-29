@@ -139,7 +139,7 @@ def write_overlay_config(local_gen_path):
         write_file(overlay_file_path, 'UDP/IPv4')
 
 
-def prep_supervisord_conf(instance_dict, executable_name, service_type, instance_name, isd_as):
+def prep_supervisord_conf(instance_dict, executable_name, service_type, instance_name, isd_as, prom_ip=None):
     """
     Prepares the supervisord configuration for the infrastructure elements
     and returns it as a ConfigParser object.
@@ -162,7 +162,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     elif service_type == 'router':  # go router
         env_tmpl += ',GODEBUG="cgocheck=0"'
         addr_type = 'Bind' if 'Bind' in instance_dict['InternalAddrs'][0].keys() else 'Public'
-        prom_addr = "%s:%s" % (instance_dict['InternalAddrs'][0][addr_type][0]['Addr'],
+        prom_addr = "%s:%s" % (instance_dict['InternalAddrs'][0][addr_type][0]['Addr'] if not prom_ip else prom_ip,
                                instance_dict['InternalAddrs'][0][addr_type][0]['L4Port'] +
                                PROM_PORT_OFFSET)
         cmd = ('bash -c \'exec "bin/%s" -id "%s" -confd "%s" -log.age "2" -prom "%s" &>logs/%s.OUT\'') % (
@@ -173,7 +173,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     elif service_type == 'certificate_server': # go certificate server
         env_tmpl += ',SCIOND_PATH="/run/shm/sciond/default.sock"'
         addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
-        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'],
+        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'] if not prom_ip else prom_ip,
                                instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
         cmd = ('bash -c \'exec "bin/%s" -id "%s" -confd "%s" -log.age "2" -prom "%s" &>logs/%s.OUT\'') % (
             executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
@@ -182,7 +182,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
                           instance_name)
     else:  # other infrastructure elements
         addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
-        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'],
+        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'] if not prom_ip else prom_ip,
                                instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
         cmd = ('bash -c \'exec "python/bin/%s" "%s" "%s" --prom "%s" &>logs/%s.OUT\'') % (
             executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
