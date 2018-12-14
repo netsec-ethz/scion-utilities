@@ -25,6 +25,7 @@ import configparser
 import json
 import os
 import yaml
+import toml
 from collections import defaultdict
 from string import Template
 
@@ -51,6 +52,7 @@ from lib.defines import (
     PROJECT_ROOT,
     PROM_FILE,
     PATH_POLICY_FILE,
+    SCIOND_API_SOCKDIR
 )
 from lib.util import (
     copy_file,
@@ -58,12 +60,10 @@ from lib.util import (
     write_file,
 )
 from topology.common import srv_iter
-from topology.generator import (
-    DEFAULT_PATH_POLICY_FILE,
-)
+from topology.generator import DEFAULT_PATH_POLICY_FILE
 from topology.supervisor import SupervisorGenArgs, SupervisorGenerator
-from topology.cert import INITIAL_CERT_VERSION, INITIAL_TRC_VERSION
 from topology.go import GoGenerator, GoGenArgs
+from topology.zk import ZKGenArgs, ZKGenerator
 
 TYPES_TO_EXECUTABLES = {
     'router': 'border',
@@ -98,6 +98,12 @@ JOB_NAMES = {
 #: Default SCION Prometheus port offset
 PROM_PORT_OFFSET = 1000
 
+class dict_to_namedtuple:
+    """Similarly to namedtuple, but initialized directly with the dictionary"""
+    def __init__(self, d=None):
+        if d:
+            for k,v in d.items():
+                setattr(self, k, v)
 
 def isdas_str(isd_as):
     return isd_as.file_fmt() if 'file_fmt' in dir(isd_as) else str(isd_as)
@@ -118,6 +124,16 @@ class ASCredential(object):
         self.trc = trc
         self.keys = keys
         self.core_keys = core_keys
+
+def nested_dicts_update(source, replacement):
+    '''the result contains the union set of keys from source and replacement,
+       also in nested dicts'''
+    for k, v in replacement.items():
+        if isinstance(v, dict):
+            source[k] = nested_dicts_update(source[k], v)
+        else:
+            source[k] = v
+    return source
 
 
 def write_dispatcher_config(local_gen_path):
@@ -206,39 +222,9 @@ def generate_zk_config(tp, isd_as, local_gen_path, simple_conf_mode):
     :param ISD_AS isd_as: ISD-AS for which the ZK config will be written.
     :param str local_gen_path: The gen path of scion-web.
     """
-    ISD = isd_str(isd_as)
-    AS = as_str(isd_as)
-    for zk_id, zk in tp['ZookeeperService'].items():
-        instance_name = 'zk%s-%s-%s' % (ISD, AS, zk_id)
-        write_zk_conf(local_gen_path, isd_as, instance_name, zk, simple_conf_mode)
-
-
-def write_zk_conf(local_gen_path, isd_as, instance_name, zk, simple_conf_mode):
-    """
-    Writes a Zookeeper configuration file for the given Zookeeper instance.
-    :param str local_gen_path: The gen path of scion-web.
-    :param ISD_AS isd_as: ISD-AS for which the ZK config will be written.
-    :param str instance_name: the instance of the ZK service (e.g. zk1-5-1).
-    :param dict zk: Zookeeper instance information from the topology as a
-    dictionary.
-    """
-    conf = {
-        'tickTime': 100,
-        'initLimit': 10,
-        'syncLimit': 5,
-        'dataDir': '/var/lib/zookeeper',
-        'clientPort': zk['L4Port'],
-        'maxClientCnxns': 0,
-        'autopurge.purgeInterval': 1,
-    }
-    if simple_conf_mode:
-        conf['clientPortAddress'] = '127.0.0.1'
-    else:
-        # set the dataLogDir only if we are operating in the normal mode.
-        conf['dataLogDir'] = '/run/shm/host-zk'
-    zk_conf_path = get_elem_dir(local_gen_path, isd_as, instance_name)
-    zk_conf_file = os.path.join(zk_conf_path, 'zoo.cfg')
-    write_file(zk_conf_file, yaml.dump(conf, default_flow_style=False))
+    zk_gen = ZKGenerator(ZKGenArgs(dict_to_namedtuple({'in_docker': False,
+                         'output_dir': local_gen_path}), {isd_as: tp}))
+    zk_gen.generate()
 
 
 def get_elem_dir(path, isd_as, elem_id):
@@ -326,9 +312,11 @@ def write_certs_trc_keys(isd_as, as_obj, instance_path):
     the configuration into.
     """
     # write keys
+    cert_version = json.loads(as_obj.certificate)['0']['Version']
+    trc_version = json.loads(as_obj.trc)['Version']
     as_key_path = {
-        'cert': get_cert_chain_file_path(instance_path, isd_as, INITIAL_CERT_VERSION),
-        'trc': get_trc_file_path(instance_path, isd_as[0], INITIAL_TRC_VERSION),
+        'cert': get_cert_chain_file_path(instance_path, isd_as, cert_version),
+        'trc': get_trc_file_path(instance_path, isd_as[0], trc_version),
         'enc_key': get_enc_key_file_path(instance_path),
         'sig_key': get_sig_key_file_path(instance_path),
         'master0_as_key': get_master_key_file_path(instance_path, MASTER_KEY_0),
@@ -372,17 +360,27 @@ def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
     path_policy_file = os.path.join(PROJECT_ROOT, DEFAULT_PATH_POLICY_FILE)
     copy_file(path_policy_file, os.path.join(instance_path, PATH_POLICY_FILE))
 
-def write_toml_files(gen_path, topos):
-    class empty(object):
-        def __init__(self):
-            self.docker = False
-            self.trace = False
-            self.output_dir = gen_path
-    args = empty()
-    args = GoGenArgs(args, topos)
+def write_toml_files(tp, ia):
+    def replace(filename, replacement):
+        '''Replace the toml dictionary in filename with the replacement dict'''
+        with open(filename, 'r') as f:
+            d = toml.load(f)
+        nested_dicts_update(d, replacement)
+        with open(filename, 'w') as f:
+            toml.dump(d, f)
+
+    args = GoGenArgs(dict_to_namedtuple({'docker': False, 'trace': False,
+                    'output_dir': GEN_PATH}), {ia: tp})
     go_gen = GoGenerator(args)
+
     go_gen.generate_sciond()
+    filename = os.path.join(get_elem_dir(GEN_PATH, ia, 'endhost'), 'sciond.toml')
+    replace(filename, {'sd': {'Reliable': os.path.join(SCIOND_API_SOCKDIR, 'default.sock'),
+                                  'Unix': os.path.join(SCIOND_API_SOCKDIR, 'default.unix')}})
     go_gen.generate_cs()
+    filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['CertificateService'].keys()))), 'csconfig.toml')
+    replace(filename, {'sd_client': {'Path': os.path.join(SCIOND_API_SOCKDIR, 'default.sock')}})
+
     go_gen.generate_ps()
 
 def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
@@ -465,11 +463,11 @@ def _write_prom_conf_file(config_path, job_dict):
 
 def _prom_addr_of_element(element):
     """Get the prometheus address for a topology element."""
-    (addrs_selector, public_keyword, bind_keyword) =                                            \
-        ('InternalAddrs','PublicOverlay','BindOverlay') if 'InternalAddrs' in element.keys()    \
-        else ('Addrs','Public','Bind')
+    (addrs_selector, public_keyword, bind_keyword, port_keyword) =                                            \
+        ('InternalAddrs','PublicOverlay','BindOverlay', 'OverlayPort') if 'InternalAddrs' in element.keys()    \
+        else ('Addrs','Public','Bind', 'L4Port')
     addrs = next(iter(element[addrs_selector].values()))
     addr_type = bind_keyword if bind_keyword in addrs.keys() else public_keyword
     IP = addrs[addr_type]['Addr']
-    port = addrs[addr_type]['L4Port'] + PROM_PORT_OFFSET
+    port = addrs[addr_type][port_keyword] + PROM_PORT_OFFSET
     return IP,port
