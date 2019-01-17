@@ -215,7 +215,7 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     return config
 
 
-def generate_zk_config(tp, isd_as, local_gen_path, simple_conf_mode):
+def generate_zk_docker_config(tp, isd_as, local_gen_path, simple_conf_mode):
     """
     Generates Zookeeper configuration files for Zookeeper instances of an AS.
     :param dict tp: the topology of the AS provided as a dict of dicts.
