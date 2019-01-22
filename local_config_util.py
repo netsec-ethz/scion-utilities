@@ -25,16 +25,15 @@ import configparser
 import json
 import os
 import yaml
+import toml
 from collections import defaultdict
 from string import Template
 
 # SCION
 from lib.crypto.asymcrypto import (
     get_core_sig_key_file_path,
-    get_core_sig_key_raw_file_path,
     get_enc_key_file_path,
     get_sig_key_file_path,
-    get_sig_key_raw_file_path,
 )
 from lib.crypto.certificate_chain import get_cert_chain_file_path
 from lib.crypto.trc import get_trc_file_path
@@ -42,32 +41,34 @@ from lib.crypto.util import (
     get_ca_cert_file_path,
     get_ca_private_key_file_path,
     get_offline_key_file_path,
-    get_offline_key_raw_file_path,
     get_online_key_file_path,
-    get_online_key_raw_file_path,
+    get_master_key_file_path,
+    MASTER_KEY_0,
+    MASTER_KEY_1,
 )
 from lib.defines import (
     AS_CONF_FILE,
     GEN_PATH,
     PROJECT_ROOT,
     PROM_FILE,
+    PATH_POLICY_FILE,
+    SCIOND_API_SOCKDIR
 )
 from lib.util import (
     copy_file,
     read_file,
     write_file,
 )
-from topology.generator import (
-    DEFAULT_PATH_POLICY_FILE,
-    INITIAL_CERT_VERSION,
-    INITIAL_TRC_VERSION,
-    PATH_POLICY_FILE,
-)
+from topology.common import srv_iter
+from topology.generator import DEFAULT_PATH_POLICY_FILE
+from topology.supervisor import SupervisorGenArgs, SupervisorGenerator
+from topology.go import GoGenerator, GoGenArgs
+from topology.zk import ZKGenArgs, ZKGenerator
 
 TYPES_TO_EXECUTABLES = {
     'router': 'border',
     'beacon_server': 'beacon_server',
-    'path_server': 'path_server',
+    'path_server': 'path_srv',
     'certificate_server': 'cert_srv',
 }
 
@@ -97,6 +98,12 @@ JOB_NAMES = {
 #: Default SCION Prometheus port offset
 PROM_PORT_OFFSET = 1000
 
+class dict_to_namedtuple:
+    """Similarly to namedtuple, but initialized directly with the dictionary"""
+    def __init__(self, d=None):
+        if d:
+            for k,v in d.items():
+                setattr(self, k, v)
 
 def isdas_str(isd_as):
     return isd_as.file_fmt() if 'file_fmt' in dir(isd_as) else str(isd_as)
@@ -117,6 +124,16 @@ class ASCredential(object):
         self.trc = trc
         self.keys = keys
         self.core_keys = core_keys
+
+def nested_dicts_update(source, replacement):
+    '''the result contains the union set of keys from source and replacement,
+       also in nested dicts'''
+    for k, v in replacement.items():
+        if isinstance(v, dict):
+            source[k] = nested_dicts_update(source[k], v)
+        else:
+            source[k] = v
+    return source
 
 
 def write_dispatcher_config(local_gen_path):
@@ -152,43 +169,38 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     :rtype: ConfigParser
     """
     ISDAS = isdas_str(isd_as)
-    config = configparser.ConfigParser()
-    env_tmpl = 'PYTHONPATH=python:.,TZ=UTC,ZLOG_CFG="%s/%s.zlog.conf"'
     if not instance_dict:
-        cmd = ('bash -c \'exec "python/bin/%s" "--api-addr" "%s" "%s" "%s" &>logs/%s.OUT\'') % (
-            executable_name, "/run/shm/sciond/default.sock", instance_name,
-            get_elem_dir(GEN_PATH, isd_as, "endhost"), instance_name)
+        cmd = 'bash -c \'exec "bin/sciond" "-config" "{elem_dir}/sciond.toml" &>logs/{instance}.OUT\'' \
+            .format(elem_dir=get_elem_dir(GEN_PATH, isd_as, "endhost"), instance=instance_name)
         env = 'PYTHONPATH=python/:.,TZ=UTC'
-    elif service_type == 'router':  # go router
-        env_tmpl += ',GODEBUG="cgocheck=0"'
-        addr_type = 'Bind' if 'Bind' in instance_dict['InternalAddrs'][0].keys() else 'Public'
-        prom_addr = "%s:%s" % (instance_dict['InternalAddrs'][0][addr_type][0]['Addr'] if not prom_ip else prom_ip,
-                               instance_dict['InternalAddrs'][0][addr_type][0]['L4Port'] +
-                               PROM_PORT_OFFSET)
-        cmd = ('bash -c \'exec "bin/%s" -id "%s" -confd "%s" -log.age "2" -prom "%s" &>logs/%s.OUT\'') % (
-            executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
-            prom_addr, instance_name)
+    else:
+        env_tmpl = 'PYTHONPATH=python/:.,TZ=UTC,ZLOG_CFG="%s/%s.zlog.conf"'
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
                           instance_name)
-    elif service_type == 'certificate_server': # go certificate server
-        env_tmpl += ',SCIOND_PATH="/run/shm/sciond/default.sock"'
-        addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
-        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'] if not prom_ip else prom_ip,
-                               instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
-        cmd = ('bash -c \'exec "bin/%s" -id "%s" -confd "%s" -log.age "2" -prom "%s" &>logs/%s.OUT\'') % (
-            executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
-            prom_addr, instance_name)
-        env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
-                          instance_name)
-    else:  # other infrastructure elements
-        addr_type = 'Bind' if 'Bind' in instance_dict.keys() else 'Public'
-        prom_addr = "%s:%s" % (instance_dict[addr_type][0]['Addr'] if not prom_ip else prom_ip,
-                               instance_dict[addr_type][0]['L4Port'] + PROM_PORT_OFFSET)
-        cmd = ('bash -c \'exec "python/bin/%s" "%s" "%s" --prom "%s" &>logs/%s.OUT\'') % (
-            executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
-            prom_addr, instance_name)
-        env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
-                          instance_name)
+        IP, port = _prom_addr_of_element(instance_dict)
+        if prom_ip:
+            IP = prom_ip
+        prom_addr = "[%s]:%s" % (IP, port)
+        if service_type == 'router':  # go router
+            env += ',GODEBUG="cgocheck=0"'
+            cmd = ('bash -c \'exec "bin/%s" "-id=%s" "-confd=%s" "-log.age=2" "-prom=%s" &>logs/%s.OUT\'') % (
+                executable_name, instance_name, get_elem_dir(GEN_PATH, isd_as, instance_name),
+                prom_addr, instance_name)
+        elif service_type == 'certificate_server': # go certificate server
+            env += ',SCIOND_PATH="/run/shm/sciond/default.sock"'
+            cmd = 'bash -c \'exec "bin/{exe}" "-config" "{elem_dir}/csconfig.toml" &>logs/{instance}.OUT\'' \
+                    .format(exe=executable_name, elem_dir=get_elem_dir(GEN_PATH, isd_as, instance_name),
+                    instance=instance_name)
+        elif service_type == 'path_server': # go path server
+            cmd = 'bash -c \'exec "bin/{exe}" "-config" "{elem_dir}/psconfig.toml" &>logs/{instance}.OUT\'' \
+                .format(exe=executable_name, elem_dir=get_elem_dir(GEN_PATH, isd_as, instance_name),
+                instance=instance_name)
+        else:  # other infrastructure elements, python
+            cmd = ('bash -c \'exec "python/bin/{exe}" "--prom" "{prom}" "--sciond_path" '
+                '"/run/shm/sciond/default.sock" "{instance}" "{elem_dir}" &>logs/{instance}.OUT\'') \
+                .format(exe=executable_name,prom=prom_addr, instance=instance_name, 
+                        elem_dir=get_elem_dir(GEN_PATH, isd_as, instance_name))
+    config = configparser.ConfigParser()
     config['program:' + instance_name] = {
         'autostart': 'false',
         'autorestart': 'true',
@@ -203,46 +215,16 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
     return config
 
 
-def generate_zk_config(tp, isd_as, local_gen_path, simple_conf_mode):
+def generate_zk_docker_config(tp, isd_as, local_gen_path, simple_conf_mode):
     """
     Generates Zookeeper configuration files for Zookeeper instances of an AS.
     :param dict tp: the topology of the AS provided as a dict of dicts.
     :param ISD_AS isd_as: ISD-AS for which the ZK config will be written.
     :param str local_gen_path: The gen path of scion-web.
     """
-    ISD = isd_str(isd_as)
-    AS = as_str(isd_as)
-    for zk_id, zk in tp['ZookeeperService'].items():
-        instance_name = 'zk%s-%s-%s' % (ISD, AS, zk_id)
-        write_zk_conf(local_gen_path, isd_as, instance_name, zk, simple_conf_mode)
-
-
-def write_zk_conf(local_gen_path, isd_as, instance_name, zk, simple_conf_mode):
-    """
-    Writes a Zookeeper configuration file for the given Zookeeper instance.
-    :param str local_gen_path: The gen path of scion-web.
-    :param ISD_AS isd_as: ISD-AS for which the ZK config will be written.
-    :param str instance_name: the instance of the ZK service (e.g. zk1-5-1).
-    :param dict zk: Zookeeper instance information from the topology as a
-    dictionary.
-    """
-    conf = {
-        'tickTime': 100,
-        'initLimit': 10,
-        'syncLimit': 5,
-        'dataDir': '/var/lib/zookeeper',
-        'clientPort': zk['L4Port'],
-        'maxClientCnxns': 0,
-        'autopurge.purgeInterval': 1,
-    }
-    if simple_conf_mode:
-        conf['clientPortAddress'] = '127.0.0.1'
-    else:
-        # set the dataLogDir only if we are operating in the normal mode.
-        conf['dataLogDir'] = '/run/shm/host-zk'
-    zk_conf_path = get_elem_dir(local_gen_path, isd_as, instance_name)
-    zk_conf_file = os.path.join(zk_conf_path, 'zoo.cfg')
-    write_file(zk_conf_file, yaml.dump(conf, default_flow_style=False))
+    zk_gen = ZKGenerator(ZKGenArgs(dict_to_namedtuple({'in_docker': False,
+                         'output_dir': local_gen_path}), {isd_as: tp}))
+    zk_gen.generate()
 
 
 def get_elem_dir(path, isd_as, elem_id):
@@ -330,20 +312,20 @@ def write_certs_trc_keys(isd_as, as_obj, instance_path):
     the configuration into.
     """
     # write keys
+    cert_version = json.loads(as_obj.certificate)['0']['Version']
+    trc_version = json.loads(as_obj.trc)['Version']
     as_key_path = {
-        'cert': get_cert_chain_file_path(instance_path, isd_as, INITIAL_CERT_VERSION),
-        'trc': get_trc_file_path(instance_path, isd_as[0], INITIAL_TRC_VERSION),
+        'cert': get_cert_chain_file_path(instance_path, isd_as, cert_version),
+        'trc': get_trc_file_path(instance_path, isd_as[0], trc_version),
         'enc_key': get_enc_key_file_path(instance_path),
         'sig_key': get_sig_key_file_path(instance_path),
-        'sig_key_raw': get_sig_key_raw_file_path(instance_path),
+        'master0_as_key': get_master_key_file_path(instance_path, MASTER_KEY_0),
+        'master1_as_key': get_master_key_file_path(instance_path, MASTER_KEY_1),
     }
     core_key_path = {
         'core_sig_key': get_core_sig_key_file_path(instance_path),
-        'core_sig_key_raw': get_core_sig_key_raw_file_path(instance_path),
         'online_key': get_online_key_file_path(instance_path),
-        'online_key_raw': get_online_key_raw_file_path(instance_path),
         'offline_key': get_offline_key_file_path(instance_path),
-        'offline_key_raw': get_offline_key_raw_file_path(instance_path),
     }
     for key, path in as_key_path.items():
         if key == 'cert': # write certificates
@@ -366,17 +348,40 @@ def write_as_conf_and_path_policy(isd_as, as_obj, instance_path):
     the configuration into.
     """
     conf = {
-        'MasterASKey': as_obj.keys['master_as_key'],
+        # 'MasterASKey': as_obj.keys['master_as_key'],
         'RegisterTime': 5,
         'PropagateTime': 5,
         'CertChainVersion': 0,
         'RegisterPath': True,
+        'PathSegmentTTL': 21600,
     }
     conf_file = os.path.join(instance_path, AS_CONF_FILE)
     write_file(conf_file, yaml.dump(conf, default_flow_style=False))
     path_policy_file = os.path.join(PROJECT_ROOT, DEFAULT_PATH_POLICY_FILE)
     copy_file(path_policy_file, os.path.join(instance_path, PATH_POLICY_FILE))
 
+def write_toml_files(tp, ia):
+    def replace(filename, replacement):
+        '''Replace the toml dictionary in filename with the replacement dict'''
+        with open(filename, 'r') as f:
+            d = toml.load(f)
+        nested_dicts_update(d, replacement)
+        with open(filename, 'w') as f:
+            toml.dump(d, f)
+
+    args = GoGenArgs(dict_to_namedtuple({'docker': False, 'trace': False,
+                    'output_dir': GEN_PATH}), {ia: tp})
+    go_gen = GoGenerator(args)
+
+    go_gen.generate_sciond()
+    filename = os.path.join(get_elem_dir(GEN_PATH, ia, 'endhost'), 'sciond.toml')
+    replace(filename, {'sd': {'Reliable': os.path.join(SCIOND_API_SOCKDIR, 'default.sock'),
+                                  'Unix': os.path.join(SCIOND_API_SOCKDIR, 'default.unix')}})
+    go_gen.generate_cs()
+    filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['CertificateService'].keys()))), 'csconfig.toml')
+    replace(filename, {'sd_client': {'Path': os.path.join(SCIOND_API_SOCKDIR, 'default.sock')}})
+
+    go_gen.generate_ps()
 
 def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
     """
@@ -413,13 +418,11 @@ def generate_prom_config(isd_as, topo_dicts, gen_path=GEN_PATH):
     """
     """
     config_dict = defaultdict(list)
-    for br_id, br_ele in topo_dicts['BorderRouters'].items():
-        config_dict['BorderRouters'].append(_prom_addr_br(br_ele))
-    for svc_type in ["BeaconService", "CertificateService", "PathService"]:
+    for svc_type in ["BeaconService", "CertificateService", "PathService", "BorderRouters"]:
         if svc_type not in topo_dicts:
             continue
         for elem_id, elem in topo_dicts[svc_type].items():
-            config_dict[svc_type].append(_prom_addr_infra(elem))
+            config_dict[svc_type].append('[{}]:{}'.format(*_prom_addr_of_element(elem)))
     _write_prom_files(isd_as, config_dict, gen_path)
 
 
@@ -458,14 +461,13 @@ def _write_prom_conf_file(config_path, job_dict):
     }
     write_file(config_path, yaml.dump(config, default_flow_style=False))
 
-
-def _prom_addr_br(br_ele):
-    """Get the prometheus address for a border router"""
-    int_addr = br_ele['InternalAddrs'][0]['Public'][0]
-    return "[%s]:%s" % (int_addr['Addr'], int_addr['L4Port'] + PROM_PORT_OFFSET)
-
-
-def _prom_addr_infra(infra_ele):
-    """Get the prometheus address for an infrastructure element."""
-    int_addr = infra_ele["Public"][0]
-    return "[%s]:%s" % (int_addr["Addr"], int_addr["L4Port"] + PROM_PORT_OFFSET)
+def _prom_addr_of_element(element):
+    """Get the prometheus address for a topology element."""
+    (addrs_selector, public_keyword, bind_keyword, port_keyword) =                                            \
+        ('InternalAddrs','PublicOverlay','BindOverlay', 'OverlayPort') if 'InternalAddrs' in element.keys()    \
+        else ('Addrs','Public','Bind', 'L4Port')
+    addrs = next(iter(element[addrs_selector].values()))
+    addr_type = bind_keyword if bind_keyword in addrs.keys() else public_keyword
+    IP = addrs[addr_type]['Addr']
+    port = addrs[addr_type][port_keyword] + PROM_PORT_OFFSET
+    return IP,port
