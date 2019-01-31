@@ -156,7 +156,7 @@ def write_overlay_config(local_gen_path):
         write_file(overlay_file_path, 'UDP/IPv4')
 
 
-def prep_supervisord_conf(instance_dict, executable_name, service_type, instance_name, isd_as, prom_ip=None):
+def prep_supervisord_conf(instance_dict, executable_name, service_type, instance_name, isd_as):
     """
     Prepares the supervisord configuration for the infrastructure elements
     and returns it as a ConfigParser object.
@@ -178,8 +178,6 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
                           instance_name)
         IP, port = _prom_addr_of_element(instance_dict)
-        if prom_ip:
-            IP = prom_ip
         prom_addr = "[%s]:%s" % (IP, port)
         if service_type == 'router':  # go router
             env += ',GODEBUG="cgocheck=0"'
@@ -468,6 +466,5 @@ def _prom_addr_of_element(element):
         else ('Addrs','Public','Bind', 'L4Port')
     addrs = next(iter(element[addrs_selector].values()))
     addr_type = bind_keyword if bind_keyword in addrs.keys() else public_keyword
-    IP = addrs[addr_type]['Addr']
     port = addrs[addr_type][port_keyword] + PROM_PORT_OFFSET
-    return IP,port
+    return '127.0.0.1',port
