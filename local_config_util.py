@@ -367,24 +367,33 @@ def write_toml_files(tp, ia):
         with open(filename, 'w') as f:
             toml.dump(d, f)
 
+    used_prometheus_ports = set()
+    def prom_params(elem):
+        IP, port = _prom_addr_of_element(elem)
+        if port in used_prometheus_ports:
+            raise Exception('Duplicated Prometheus port {} found. The list of used ports is {}'.format(port, list(used_prometheus_ports)))
+        used_prometheus_ports.add(port)
+        return IP, port
+
     args = GoGenArgs(dict_to_namedtuple({'docker': False, 'trace': False,
                     'output_dir': GEN_PATH}), {ia: tp})
     go_gen = GoGenerator(args)
 
     go_gen.generate_sciond()
+    IP, port = prom_params(None)
     filename = os.path.join(get_elem_dir(GEN_PATH, ia, 'endhost'), 'sciond.toml')
     replace(filename, {'sd': {'Reliable': os.path.join(SCIOND_API_SOCKDIR, 'default.sock'),
                                   'Unix': os.path.join(SCIOND_API_SOCKDIR, 'default.unix')},
-                       'metrics': {'Prometheus': '127.0.0.1:32040'}
+                       'metrics': {'Prometheus': '{}:{}'.format(IP, port)}
                       })
     go_gen.generate_cs()
-    IP, port = _prom_addr_of_element(next(iter(tp['CertificateService'].values())))
+    IP, port = prom_params(next(iter(tp['CertificateService'].values())))
     filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['CertificateService'].keys()))), 'csconfig.toml')
     replace(filename, {'sd_client': {'Path': os.path.join(SCIOND_API_SOCKDIR, 'default.sock')},
                         'metrics': {'Prometheus': '{}:{}'.format(IP,port)}
                       })
     go_gen.generate_ps()
-    IP, port = _prom_addr_of_element(next(iter(tp['PathService'].values())))
+    IP, port = prom_params(next(iter(tp['PathService'].values())))
     filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['PathService'].keys()))), 'psconfig.toml')
     replace(filename, {'metrics': {'Prometheus': '{}:{}'.format(IP, port)}})
 
@@ -467,11 +476,14 @@ def _write_prom_conf_file(config_path, job_dict):
     write_file(config_path, yaml.dump(config, default_flow_style=False))
 
 def _prom_addr_of_element(element):
-    """Get the prometheus address for a topology element."""
+    """Get the prometheus address for a topology element. With element=None, get it for sciond"""
+    if not element:
+        # this is sciond
+        return '127.0.0.1', 32040
     (addrs_selector, public_keyword, bind_keyword, port_keyword) =                                            \
         ('InternalAddrs','PublicOverlay','BindOverlay', 'OverlayPort') if 'InternalAddrs' in element.keys()    \
         else ('Addrs','Public','Bind', 'L4Port')
     addrs = next(iter(element[addrs_selector].values()))
     addr_type = bind_keyword if bind_keyword in addrs.keys() else public_keyword
     port = addrs[addr_type][port_keyword] + PROM_PORT_OFFSET
-    return '127.0.0.1',port
+    return '127.0.0.1', port
