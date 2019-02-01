@@ -129,7 +129,7 @@ def nested_dicts_update(source, replacement):
     '''the result contains the union set of keys from source and replacement,
        also in nested dicts'''
     for k, v in replacement.items():
-        if isinstance(v, dict):
+        if k in source.keys() and isinstance(v, dict):
             source[k] = nested_dicts_update(source[k], v)
         else:
             source[k] = v
@@ -374,12 +374,19 @@ def write_toml_files(tp, ia):
     go_gen.generate_sciond()
     filename = os.path.join(get_elem_dir(GEN_PATH, ia, 'endhost'), 'sciond.toml')
     replace(filename, {'sd': {'Reliable': os.path.join(SCIOND_API_SOCKDIR, 'default.sock'),
-                                  'Unix': os.path.join(SCIOND_API_SOCKDIR, 'default.unix')}})
+                                  'Unix': os.path.join(SCIOND_API_SOCKDIR, 'default.unix')},
+                       'metrics': {'Prometheus': '127.0.0.1:32040'}
+                      })
     go_gen.generate_cs()
+    IP, port = _prom_addr_of_element(next(iter(tp['CertificateService'].values())))
     filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['CertificateService'].keys()))), 'csconfig.toml')
-    replace(filename, {'sd_client': {'Path': os.path.join(SCIOND_API_SOCKDIR, 'default.sock')}})
-
+    replace(filename, {'sd_client': {'Path': os.path.join(SCIOND_API_SOCKDIR, 'default.sock')},
+                        'metrics': {'Prometheus': '{}:{}'.format(IP,port)}
+                      })
     go_gen.generate_ps()
+    IP, port = _prom_addr_of_element(next(iter(tp['PathService'].values())))
+    filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['PathService'].keys()))), 'psconfig.toml')
+    replace(filename, {'metrics': {'Prometheus': '{}:{}'.format(IP, port)}})
 
 def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
     """
