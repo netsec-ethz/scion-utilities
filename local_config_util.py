@@ -129,7 +129,7 @@ def nested_dicts_update(source, replacement):
     '''the result contains the union set of keys from source and replacement,
        also in nested dicts'''
     for k, v in replacement.items():
-        if isinstance(v, dict):
+        if k in source.keys() and isinstance(v, dict):
             source[k] = nested_dicts_update(source[k], v)
         else:
             source[k] = v
@@ -156,7 +156,7 @@ def write_overlay_config(local_gen_path):
         write_file(overlay_file_path, 'UDP/IPv4')
 
 
-def prep_supervisord_conf(instance_dict, executable_name, service_type, instance_name, isd_as, prom_ip=None):
+def prep_supervisord_conf(instance_dict, executable_name, service_type, instance_name, isd_as):
     """
     Prepares the supervisord configuration for the infrastructure elements
     and returns it as a ConfigParser object.
@@ -178,8 +178,6 @@ def prep_supervisord_conf(instance_dict, executable_name, service_type, instance
         env = env_tmpl % (get_elem_dir(GEN_PATH, isd_as, instance_name),
                           instance_name)
         IP, port = _prom_addr_of_element(instance_dict)
-        if prom_ip:
-            IP = prom_ip
         prom_addr = "[%s]:%s" % (IP, port)
         if service_type == 'router':  # go router
             env += ',GODEBUG="cgocheck=0"'
@@ -369,19 +367,35 @@ def write_toml_files(tp, ia):
         with open(filename, 'w') as f:
             toml.dump(d, f)
 
+    used_prometheus_ports = set()
+    def prom_params(elem):
+        IP, port = _prom_addr_of_element(elem)
+        if port in used_prometheus_ports:
+            raise Exception('Duplicated Prometheus port {} found. The list of used ports is {}'.format(port, list(used_prometheus_ports)))
+        used_prometheus_ports.add(port)
+        return IP, port
+
     args = GoGenArgs(dict_to_namedtuple({'docker': False, 'trace': False,
                     'output_dir': GEN_PATH}), {ia: tp})
     go_gen = GoGenerator(args)
 
     go_gen.generate_sciond()
+    IP, port = prom_params(None)
     filename = os.path.join(get_elem_dir(GEN_PATH, ia, 'endhost'), 'sciond.toml')
     replace(filename, {'sd': {'Reliable': os.path.join(SCIOND_API_SOCKDIR, 'default.sock'),
-                                  'Unix': os.path.join(SCIOND_API_SOCKDIR, 'default.unix')}})
+                                  'Unix': os.path.join(SCIOND_API_SOCKDIR, 'default.unix')},
+                       'metrics': {'Prometheus': '{}:{}'.format(IP, port)}
+                      })
     go_gen.generate_cs()
+    IP, port = prom_params(next(iter(tp['CertificateService'].values())))
     filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['CertificateService'].keys()))), 'csconfig.toml')
-    replace(filename, {'sd_client': {'Path': os.path.join(SCIOND_API_SOCKDIR, 'default.sock')}})
-
+    replace(filename, {'sd_client': {'Path': os.path.join(SCIOND_API_SOCKDIR, 'default.sock')},
+                        'metrics': {'Prometheus': '{}:{}'.format(IP,port)}
+                      })
     go_gen.generate_ps()
+    IP, port = prom_params(next(iter(tp['PathService'].values())))
+    filename = os.path.join(get_elem_dir(GEN_PATH, ia, next(iter(tp['PathService'].keys()))), 'psconfig.toml')
+    replace(filename, {'metrics': {'Prometheus': '{}:{}'.format(IP, port)}})
 
 def generate_sciond_config(isd_as, as_obj, topo_dicts, gen_path=GEN_PATH):
     """
@@ -462,12 +476,14 @@ def _write_prom_conf_file(config_path, job_dict):
     write_file(config_path, yaml.dump(config, default_flow_style=False))
 
 def _prom_addr_of_element(element):
-    """Get the prometheus address for a topology element."""
+    """Get the prometheus address for a topology element. With element=None, get it for sciond"""
+    if not element:
+        # this is sciond
+        return '127.0.0.1', 32040
     (addrs_selector, public_keyword, bind_keyword, port_keyword) =                                            \
         ('InternalAddrs','PublicOverlay','BindOverlay', 'OverlayPort') if 'InternalAddrs' in element.keys()    \
         else ('Addrs','Public','Bind', 'L4Port')
     addrs = next(iter(element[addrs_selector].values()))
     addr_type = bind_keyword if bind_keyword in addrs.keys() else public_keyword
-    IP = addrs[addr_type]['Addr']
     port = addrs[addr_type][port_keyword] + PROM_PORT_OFFSET
-    return IP,port
+    return '127.0.0.1', port
